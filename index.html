@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Axon Brill Cell Simulation</title>
+    <title>Axon Right-to-Left Photonic Cascade</title>
     <style>
         body {
             background-color: #0d1117;
@@ -15,175 +15,198 @@
             margin: 0;
             padding: 20px;
         }
-        h1 { color: #58a6ff; }
+        h1 { color: #ff7b72; }
         .dashboard {
             display: flex;
-            gap: 20px;
+            gap: 15px;
             background: #161b22;
-            padding: 20px;
+            padding: 15px;
             border-radius: 8px;
             border: 1px solid #30363d;
             margin-bottom: 20px;
             flex-wrap: wrap;
             justify-content: center;
-        }
-        .control-group {
-            display: flex;
-            flex-direction: column;
             align-items: center;
-            min-width: 150px;
         }
-        input[type="range"] { width: 100%; cursor: pointer; }
-        .val-display { font-weight: bold; color: #79c0ff; margin-top: 5px; }
-        canvas {
-            background: #000;
+        .tool-btn {
+            background: #21262d;
+            color: #c9d1d9;
             border: 1px solid #30363d;
-            box-shadow: 0 0 20px rgba(88, 166, 255, 0.2);
-            image-rendering: pixelated;
-        }
-        button {
-            background: #238636;
-            color: white;
-            border: none;
-            padding: 10px 20px;
+            padding: 10px 15px;
             border-radius: 5px;
             cursor: pointer;
             font-family: monospace;
             font-weight: bold;
-            margin-top: 10px;
+            transition: 0.2s;
         }
-        button:hover { background: #2ea043; }
-        .notes { max-width: 600px; text-align: center; margin-top: 15px; font-size: 0.9em; color: #8b949e; }
+        .tool-btn.active { background: #ff7b72; color: #0d1117; }
+        .tool-btn:hover:not(.active) { background: #30363d; }
+        
+        canvas {
+            background: #000;
+            border: 1px solid #30363d;
+            box-shadow: 0 0 20px rgba(255, 123, 114, 0.15);
+            cursor: crosshair;
+        }
+        .notes { max-width: 700px; text-align: center; margin-top: 15px; font-size: 0.9em; color: #8b949e; line-height: 1.5; }
     </style>
 </head>
 <body>
 
-    <h1>Brill Cell Array Simulator (10k Cells)</h1>
+    <h1>Analog Photonic Cascade Simulator</h1>
     
     <div class="dashboard">
-        <div class="control-group">
-            <label>KBK Filter A (w_A)</label>
-            <input type="range" id="wA" min="-2" max="2" step="0.1" value="1">
-            <div class="val-display" id="wA-val">1.0</div>
-        </div>
-        <div class="control-group">
-            <label>KBK Filter B (w_B)</label>
-            <input type="range" id="wB" min="-2" max="2" step="0.1" value="1">
-            <div class="val-display" id="wB-val">1.0</div>
-        </div>
-        <div class="control-group">
-            <label>Internal Bias (theta)</label>
-            <input type="range" id="theta" min="-3" max="3" step="0.1" value="1">
-            <div class="val-display" id="theta-val">1.0</div>
-        </div>
-        <div class="control-group">
-            <button id="resetBtn">Randomize Seed</button>
-            <button id="toggleBtn" style="background:#1f6feb;">Pause/Play</button>
-        </div>
+        <strong>Paint Hardware:</strong>
+        <button class="tool-btn active" data-type="1">Laser Source (200)</button>
+        <button class="tool-btn" data-type="2">Axon / Wire</button>
+        <button class="tool-btn" data-type="3">Beamsplitter</button>
+        <button class="tool-btn" data-type="4">AND Gate (≥100)</button>
+        <button class="tool-btn" data-type="5">OR Gate (≥50)</button>
+        <button class="tool-btn" data-type="0" style="color: #ff4444;">Erase</button>
+        <button id="clearBtn" class="tool-btn" style="margin-left: 20px; border-color: #ff4444;">Clear Board</button>
     </div>
 
-    <canvas id="brillGrid" width="600" height="600"></canvas>
+    <canvas id="brillGrid" width="900" height="600"></canvas>
 
     <div class="notes">
-        <p><strong>Modes:</strong> OR (wA=1, wB=1, theta=1) | AND (wA=1, wB=1, theta=-1)</p>
-        <p>Blue = +1 (Passing Polarization) | Dark = -1 (Blocking/Canceling Polarization)</p>
+        <p><strong>Mechanics:</strong> Light flows strictly <strong>Right-to-Left</strong>. Draw your inputs on the right side of the canvas. Connect them using Axons. Use Beamsplitters to fork the data (intensity degrades). Route converging beams into a single Axon to mathematically recombine their optical power.</p>
     </div>
 
     <script>
         const canvas = document.getElementById('brillGrid');
         const ctx = canvas.getContext('2d');
         
-        const GRID_SIZE = 100; // 100x100 = 10,000 cells
-        const CELL_SIZE = canvas.width / GRID_SIZE;
+        const COLS = 60;
+        const ROWS = 40;
+        const CELL_SIZE = canvas.width / COLS;
         
-        // Two grids for double-buffering the cellular automaton
-        let grid = new Int8Array(GRID_SIZE * GRID_SIZE);
-        let nextGrid = new Int8Array(GRID_SIZE * GRID_SIZE);
+        // Data Arrays
+        let gridTypes = new Uint8Array(COLS * ROWS);
+        let lightLevel = new Float32Array(COLS * ROWS);
+        let nextLightLevel = new Float32Array(COLS * ROWS);
         
-        let isRunning = true;
+        let currentTool = 1; // Default to Source
+        let isDrawing = false;
 
-        // UI Elements
-        const wAInput = document.getElementById('wA');
-        const wBInput = document.getElementById('wB');
-        const thetaInput = document.getElementById('theta');
-        const wAVal = document.getElementById('wA-val');
-        const wBVal = document.getElementById('wB-val');
-        const thetaVal = document.getElementById('theta-val');
+        // UI Tool Selection
+        document.querySelectorAll('.tool-btn[data-type]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+                e.target.classList.add('active');
+                currentTool = parseInt(e.target.getAttribute('data-type'));
+            });
+        });
 
-        function updateLabels() {
-            wAVal.textContent = parseFloat(wAInput.value).toFixed(1);
-            wBVal.textContent = parseFloat(wBInput.value).toFixed(1);
-            thetaVal.textContent = parseFloat(thetaInput.value).toFixed(1);
-        }
+        document.getElementById('clearBtn').addEventListener('click', () => {
+            gridTypes.fill(0);
+            lightLevel.fill(0);
+        });
 
-        wAInput.addEventListener('input', updateLabels);
-        wBInput.addEventListener('input', updateLabels);
-        thetaInput.addEventListener('input', updateLabels);
-
-        // Initialize grid with random {-1, 1} encoding
-        function randomizeGrid() {
-            for (let i = 0; i < grid.length; i++) {
-                grid[i] = Math.random() > 0.5 ? 1 : -1;
+        // Mouse Interaction
+        function paintCell(e) {
+            if (!isDrawing) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.floor((e.clientX - rect.left) / CELL_SIZE);
+            const y = Math.floor((e.clientY - rect.top) / CELL_SIZE);
+            
+            if (x >= 0 && x < COLS && y >= 0 && y < ROWS) {
+                gridTypes[y * COLS + x] = currentTool;
             }
         }
 
-        document.getElementById('resetBtn').addEventListener('click', randomizeGrid);
-        document.getElementById('toggleBtn').addEventListener('click', () => {
-            isRunning = !isRunning;
-        });
-
-        function getCell(x, y) {
-            // Toroidal wrap-around for edge cases (simulating infinite feed)
-            const wrappedX = (x + GRID_SIZE) % GRID_SIZE;
-            const wrappedY = (y + GRID_SIZE) % GRID_SIZE;
-            return grid[wrappedY * GRID_SIZE + wrappedX];
-        }
+        canvas.addEventListener('mousedown', (e) => { isDrawing = true; paintCell(e); });
+        canvas.addEventListener('mousemove', paintCell);
+        window.addEventListener('mouseup', () => { isDrawing = false; });
 
         function step() {
-            if (!isRunning) return;
+            nextLightLevel.fill(0);
 
-            const wA = parseFloat(wAInput.value);
-            const wB = parseFloat(wBInput.value);
-            const theta = parseFloat(thetaInput.value);
+            // Process hardware from Right to Left
+            for (let x = COLS - 1; x >= 0; x--) {
+                for (let y = 0; y < ROWS; y++) {
+                    const idx = y * COLS + x;
+                    const type = gridTypes[idx];
+                    
+                    // Sources generate constant power (200 units)
+                    if (type === 1) {
+                        nextLightLevel[idx] = 200;
+                    }
 
-            for (let y = 0; y < GRID_SIZE; y++) {
-                for (let x = 0; x < GRID_SIZE; x++) {
-                    
-                    // Input A comes from the cell above, Input B comes from the cell to the left
-                    const a = getCell(x, y - 1);
-                    const b = getCell(x - 1, y);
+                    const myLight = lightLevel[idx];
+                    if (myLight <= 0.1) continue; // Ignore negligible light
 
-                    // The Brill Equation: y = sgn(wA*a + wB*b + theta)
-                    const H_n = (wA * a) + (wB * b) + theta;
-                    
-                    // Sign function mapping (0 defaults to passing/1 for stability)
-                    const output = H_n >= 0 ? 1 : -1;
-                    
-                    nextGrid[y * GRID_SIZE + x] = output;
+                    const leftIdx = y * COLS + (x - 1);
+                    const upIdx = (y - 1) * COLS + x;
+                    const downIdx = (y + 1) * COLS + x;
+
+                    // Push light logic
+                    if (x > 0) {
+                        if (type === 2) { 
+                            // Axon/Wire: Pass 100% left
+                            nextLightLevel[leftIdx] += myLight;
+                        } 
+                        else if (type === 3) { 
+                            // Beamsplitter: 50% left, 25% up, 25% down
+                            nextLightLevel[leftIdx] += myLight * 0.5;
+                            if (y > 0) nextLightLevel[upIdx] += myLight * 0.25;
+                            if (y < ROWS - 1) nextLightLevel[downIdx] += myLight * 0.25;
+                        }
+                        else if (type === 4) { 
+                            // AND Gate (Threshold 100)
+                            if (myLight >= 100) nextLightLevel[leftIdx] += myLight;
+                        }
+                        else if (type === 5) { 
+                            // OR Gate (Threshold 50)
+                            if (myLight >= 50) nextLightLevel[leftIdx] += myLight;
+                        }
+                    }
                 }
             }
 
             // Swap buffers
-            let temp = grid;
-            grid = nextGrid;
-            nextGrid = temp;
+            let temp = lightLevel;
+            lightLevel = nextLightLevel;
+            nextLightLevel = temp;
+        }
+
+        function getColor(type, intensity) {
+            // Hardware Base Colors
+            if (intensity < 1) {
+                switch(type) {
+                    case 1: return '#ff7b72'; // Source (Off)
+                    case 2: return '#30363d'; // Axon
+                    case 3: return '#8b949e'; // Splitter
+                    case 4: return '#d2a8ff'; // AND
+                    case 5: return '#79c0ff'; // OR
+                    default: return '#000000';
+                }
+            }
+
+            // Active Optical Colors based on intensity
+            if (intensity > 150) return '#ffffff'; // Blinding
+            if (intensity >= 100) return '#ff7b72'; // Passing AND threshold
+            if (intensity >= 50) return '#d29922';  // Passing OR threshold
+            return '#a52a2a'; // Dim / Decayed
         }
 
         function draw() {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             
-            for (let y = 0; y < GRID_SIZE; y++) {
-                for (let x = 0; x < GRID_SIZE; x++) {
-                    const state = grid[y * GRID_SIZE + x];
+            for (let y = 0; y < ROWS; y++) {
+                for (let x = 0; x < COLS; x++) {
+                    const idx = y * COLS + x;
+                    const type = gridTypes[idx];
+                    const intensity = lightLevel[idx];
+
+                    if (type === 0 && intensity < 1) continue;
+
+                    ctx.fillStyle = getColor(type, intensity);
                     
-                    // Neon blue for +1 (Passing), deep background for -1 (Blocking)
-                    if (state === 1) {
-                        ctx.fillStyle = '#58a6ff';
-                        ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE - 1, CELL_SIZE - 1);
-                    } else {
-                        ctx.fillStyle = '#0d1117';
-                        ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE - 1, CELL_SIZE - 1);
-                    }
+                    // Add padding to make hardware look discrete
+                    let pad = (type !== 0 && type !== 2) ? 2 : 0; 
+                    if (type === 0) pad = 4; // Loose light looks smaller
+                    
+                    ctx.fillRect(x * CELL_SIZE + pad, y * CELL_SIZE + pad, CELL_SIZE - pad*2, CELL_SIZE - pad*2);
                 }
             }
         }
@@ -191,12 +214,9 @@
         function loop() {
             step();
             draw();
-            // Slowed down slightly for visual clarity (adjust ms as needed)
-            setTimeout(() => requestAnimationFrame(loop), 50); 
+            setTimeout(() => requestAnimationFrame(loop), 30); 
         }
 
-        randomizeGrid();
-        updateLabels();
         loop();
 
     </script>
