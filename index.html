@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Axon Brill Cell Simulation</title>
+    <style>
+        body {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 { color: #58a6ff; }
+        .dashboard {
+            display: flex;
+            gap: 20px;
+            background: #161b22;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #30363d;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 150px;
+        }
+        input[type="range"] { width: 100%; cursor: pointer; }
+        .val-display { font-weight: bold; color: #79c0ff; margin-top: 5px; }
+        canvas {
+            background: #000;
+            border: 1px solid #30363d;
+            box-shadow: 0 0 20px rgba(88, 166, 255, 0.2);
+            image-rendering: pixelated;
+        }
+        button {
+            background: #238636;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-family: monospace;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        button:hover { background: #2ea043; }
+        .notes { max-width: 600px; text-align: center; margin-top: 15px; font-size: 0.9em; color: #8b949e; }
+    </style>
+</head>
+<body>
+
+    <h1>Brill Cell Array Simulator (10k Cells)</h1>
+    
+    <div class="dashboard">
+        <div class="control-group">
+            <label>KBK Filter A (w_A)</label>
+            <input type="range" id="wA" min="-2" max="2" step="0.1" value="1">
+            <div class="val-display" id="wA-val">1.0</div>
+        </div>
+        <div class="control-group">
+            <label>KBK Filter B (w_B)</label>
+            <input type="range" id="wB" min="-2" max="2" step="0.1" value="1">
+            <div class="val-display" id="wB-val">1.0</div>
+        </div>
+        <div class="control-group">
+            <label>Internal Bias (theta)</label>
+            <input type="range" id="theta" min="-3" max="3" step="0.1" value="1">
+            <div class="val-display" id="theta-val">1.0</div>
+        </div>
+        <div class="control-group">
+            <button id="resetBtn">Randomize Seed</button>
+            <button id="toggleBtn" style="background:#1f6feb;">Pause/Play</button>
+        </div>
+    </div>
+
+    <canvas id="brillGrid" width="600" height="600"></canvas>
+
+    <div class="notes">
+        <p><strong>Modes:</strong> OR (wA=1, wB=1, theta=1) | AND (wA=1, wB=1, theta=-1)</p>
+        <p>Blue = +1 (Passing Polarization) | Dark = -1 (Blocking/Canceling Polarization)</p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('brillGrid');
+        const ctx = canvas.getContext('2d');
+        
+        const GRID_SIZE = 100; // 100x100 = 10,000 cells
+        const CELL_SIZE = canvas.width / GRID_SIZE;
+        
+        // Two grids for double-buffering the cellular automaton
+        let grid = new Int8Array(GRID_SIZE * GRID_SIZE);
+        let nextGrid = new Int8Array(GRID_SIZE * GRID_SIZE);
+        
+        let isRunning = true;
+
+        // UI Elements
+        const wAInput = document.getElementById('wA');
+        const wBInput = document.getElementById('wB');
+        const thetaInput = document.getElementById('theta');
+        const wAVal = document.getElementById('wA-val');
+        const wBVal = document.getElementById('wB-val');
+        const thetaVal = document.getElementById('theta-val');
+
+        function updateLabels() {
+            wAVal.textContent = parseFloat(wAInput.value).toFixed(1);
+            wBVal.textContent = parseFloat(wBInput.value).toFixed(1);
+            thetaVal.textContent = parseFloat(thetaInput.value).toFixed(1);
+        }
+
+        wAInput.addEventListener('input', updateLabels);
+        wBInput.addEventListener('input', updateLabels);
+        thetaInput.addEventListener('input', updateLabels);
+
+        // Initialize grid with random {-1, 1} encoding
+        function randomizeGrid() {
+            for (let i = 0; i < grid.length; i++) {
+                grid[i] = Math.random() > 0.5 ? 1 : -1;
+            }
+        }
+
+        document.getElementById('resetBtn').addEventListener('click', randomizeGrid);
+        document.getElementById('toggleBtn').addEventListener('click', () => {
+            isRunning = !isRunning;
+        });
+
+        function getCell(x, y) {
+            // Toroidal wrap-around for edge cases (simulating infinite feed)
+            const wrappedX = (x + GRID_SIZE) % GRID_SIZE;
+            const wrappedY = (y + GRID_SIZE) % GRID_SIZE;
+            return grid[wrappedY * GRID_SIZE + wrappedX];
+        }
+
+        function step() {
+            if (!isRunning) return;
+
+            const wA = parseFloat(wAInput.value);
+            const wB = parseFloat(wBInput.value);
+            const theta = parseFloat(thetaInput.value);
+
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    
+                    // Input A comes from the cell above, Input B comes from the cell to the left
+                    const a = getCell(x, y - 1);
+                    const b = getCell(x - 1, y);
+
+                    // The Brill Equation: y = sgn(wA*a + wB*b + theta)
+                    const H_n = (wA * a) + (wB * b) + theta;
+                    
+                    // Sign function mapping (0 defaults to passing/1 for stability)
+                    const output = H_n >= 0 ? 1 : -1;
+                    
+                    nextGrid[y * GRID_SIZE + x] = output;
+                }
+            }
+
+            // Swap buffers
+            let temp = grid;
+            grid = nextGrid;
+            nextGrid = temp;
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    const state = grid[y * GRID_SIZE + x];
+                    
+                    // Neon blue for +1 (Passing), deep background for -1 (Blocking)
+                    if (state === 1) {
+                        ctx.fillStyle = '#58a6ff';
+                        ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE - 1, CELL_SIZE - 1);
+                    } else {
+                        ctx.fillStyle = '#0d1117';
+                        ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE - 1, CELL_SIZE - 1);
+                    }
+                }
+            }
+        }
+
+        function loop() {
+            step();
+            draw();
+            // Slowed down slightly for visual clarity (adjust ms as needed)
+            setTimeout(() => requestAnimationFrame(loop), 50); 
+        }
+
+        randomizeGrid();
+        updateLabels();
+        loop();
+
+    </script>
+</body>
+</html>
